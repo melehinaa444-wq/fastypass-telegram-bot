@@ -11,21 +11,21 @@ class ProviderTests(unittest.TestCase):
         base,key,models,default=provider_config({'OPENAI_API_KEY':'test-key'})
         self.assertEqual(base,'https://api.openai.com/v1')
         self.assertEqual(default,'gpt-5.4-mini')
-        self.assertNotIn('gpt-5.6-luna',models)
+        self.assertEqual(models,('gpt-5.4-mini',))
     def test_no_key_fallback_or_untrusted_host(self):
         for config in [
-            {'FASTYPASS_API_KEY':'test-key'},
-            {'BASE_URL':'https://api.fastypass.com:8444/v1','OPENAI_API_KEY':'test-key'},
-            {'BASE_URL':'https://api.fastypass.com:8444/v1','FASTYPASS_API_KEY':'sk-proj-test'},
+            {},
             {'BASE_URL':'https://example.com','OPENAI_API_KEY':'test-key'},
+            {'BASE_URL':'https://api.openai.com.evil.example/v1','OPENAI_API_KEY':'test-key'},
         ]:
             with self.assertRaises(ValueError): provider_config(config)
     def test_model_migration_and_user_isolation(self):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as folder:
             path=str(Path(folder)/'db.sqlite')
             store=Store(path)
-            store.set(1,'model','gpt-5.6-luna')
-            store.record(1,'gpt-5.6-luna','hello','answer',{'prompt_tokens':3,'completion_tokens':2})
+            store.db.execute("INSERT INTO users(id,model) VALUES(1,'retired-model')")
+            store.db.commit()
+            store.record(1,'retired-model','hello','answer',{'prompt_tokens':3,'completion_tokens':2})
             store.record(2,'gpt-5.4-mini','private','private answer',{})
             store.db.close()
             store=Store(path,models=('gpt-5.4-mini',))
@@ -33,7 +33,7 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual(len(store.context(1,'new')),2)
             self.assertEqual(store.stats(1)[:3],(1,3,2))
             self.assertNotIn('private',str(store.context(1,'new')))
-            with self.assertRaises(ValueError): store.set(1,'model','gpt-5.6-luna')
+            with self.assertRaises(ValueError): store.set(1,'model','retired-model')
             store.db.close()
 
 def immediate(coroutine):
@@ -49,7 +49,7 @@ class FakeClient:
 
 class HTTPTests(unittest.TestCase):
     def test_provider_payloads(self):
-        for base,field in [('https://api.openai.com/v1','max_completion_tokens'),('https://api.fastypass.com:8444/v1','max_tokens')]:
+        for base,field in [('https://api.openai.com/v1','max_completion_tokens')]:
             def handler(request):
                 self.assertEqual(str(request.url),base+'/chat/completions')
                 payload=json.loads(request.content)
@@ -58,6 +58,10 @@ class HTTPTests(unittest.TestCase):
                 return httpx.Response(200,json={'choices':[{'message':{'content':'answer'}}],'usage':{'prompt_tokens':5}})
             answer,usage=immediate(complete(FakeClient(handler),base,'test-key','gpt-5.4-mini',[{'role':'user','content':'hello'}],1500))
             self.assertEqual(answer,'answer')
+    def test_non_official_endpoint_never_called(self):
+        def handler(request): raise AssertionError('Must not send credentials')
+        with self.assertRaises(APIError):
+            immediate(complete(FakeClient(handler),'https://example.com/v1','test-key','gpt-5.4-mini',[],1500))
     def test_errors_do_not_leak_response(self):
         def handler(request): return httpx.Response(401,text='secret-token')
         with self.assertRaises(APIError) as result:

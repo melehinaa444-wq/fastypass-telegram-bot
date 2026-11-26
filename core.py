@@ -2,25 +2,18 @@ import os
 import sqlite3
 from pathlib import Path
 
-MODELS = ('gpt-6-astra','gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna','gpt-5.5','gpt-5.4','gpt-5.4-mini','gpt-oss-120b','codex-auto-review')
-
-OPENAI_MODELS = ('gpt-5.4-mini',)
+MODELS = ('gpt-5.4-mini',)
+OPENAI_BASE_URL = 'https://api.openai.com/v1'
 
 def provider_config(env):
-    base = env.get('BASE_URL', 'https://api.openai.com/v1').strip().rstrip('/')
-    if base == 'https://api.openai.com/v1':
-        key_name, models = 'OPENAI_API_KEY', OPENAI_MODELS
-    elif base == 'https://api.fastypass.com:8444/v1':
-        key_name, models = 'FASTYPASS_API_KEY', MODELS
-    else:
-        raise ValueError('BASE_URL: разрешены только официальные адреса OpenAI или Fastypass')
-    key = env.get(key_name, '').strip()
-    if not key: raise ValueError('Не задана переменная ' + key_name)
-    if key_name == 'FASTYPASS_API_KEY' and key.startswith('sk-proj-'):
-        raise ValueError('Ключ проекта OpenAI нельзя отправлять в Fastypass. Укажите BASE_URL=https://api.openai.com/v1 и OPENAI_API_KEY')
+    base = env.get('BASE_URL', OPENAI_BASE_URL).strip().rstrip('/')
+    if base != OPENAI_BASE_URL:
+        raise ValueError('BASE_URL должен быть https://api.openai.com/v1')
+    key = env.get('OPENAI_API_KEY', '').strip()
+    if not key: raise ValueError('Не задана переменная OPENAI_API_KEY')
     default = env.get('DEFAULT_MODEL', 'gpt-5.4-mini').strip()
-    if default not in models: raise ValueError('DEFAULT_MODEL не поддерживается выбранным провайдером')
-    return base, key, models, default
+    if default not in MODELS: raise ValueError('DEFAULT_MODEL не поддерживается')
+    return base, key, MODELS, default
 
 class Store:
     def __init__(self, path, default='gpt-5.4-mini', prompt='Ты полезный ассистент.', models=MODELS):
@@ -34,7 +27,7 @@ class Store:
         ''')
         self.default, self.prompt, self.models = default, prompt, models
         if default not in models: raise ValueError("default model")
-        # Provider-specific model migration: preserve usage, clear affected history.
+        # Unsupported model migration: preserve usage, clear affected history.
         with self.db:
             for uid, model in self.db.execute("SELECT id,model FROM users").fetchall():
                 if model not in models:
@@ -79,8 +72,8 @@ class APIError(Exception): pass
 
 async def complete(client, base, key, model, messages, max_tokens):
     try:
-        budget_param = 'max_completion_tokens' if base == 'https://api.openai.com/v1' else 'max_tokens'
-        response = await client.post(base+'/chat/completions',headers={'Authorization':'Bearer '+key},json={'model':model,'messages':messages,budget_param:max_tokens,'stream':False})
+        if base != OPENAI_BASE_URL: raise APIError('Разрешён только официальный API OpenAI')
+        response = await client.post(base+'/chat/completions',headers={'Authorization':'Bearer '+key},json={'model':model,'messages':messages,'max_completion_tokens':max_tokens,'stream':False})
         if response.status_code != 200: raise APIError('HTTP '+str(response.status_code))
         data = response.json()
         answer = data['choices'][0]['message']['content']

@@ -30,7 +30,6 @@ async def main():
     if missing: raise SystemExit('Не заданы переменные: ' + ', '.join(missing))
     try: base, key, models, default = provider_config(os.environ)
     except ValueError as exc: raise SystemExit(str(exc)) from None
-    provider = 'OpenAI' if base == 'https://api.openai.com/v1' else 'Fastypass'
     store = Store(os.getenv('DB_PATH','data/bot.sqlite3'),default,os.getenv('SYSTEM_PROMPT','Ты полезный ассистент.'),models=models)
     for uid in ids('ALLOWLIST_IDS') | admins: store.allow(uid,True)
     limit, output = int(os.getenv('MAX_HISTORY_CHARS','24000')), int(os.getenv('MAX_OUTPUT_TOKENS','1500'))
@@ -66,7 +65,7 @@ async def main():
         if not allowed(uid): await m.answer(f'Доступ закрыт. Ваш ID: {uid}'); return
         if uid in busy: await m.answer('Дождитесь завершения предыдущего запроса.'); return
         if command in ('/start','/help'):
-            await m.answer('Ассистент через '+provider+'. Сообщения передаются выбранному провайдеру.\n'+HELP); return
+            await m.answer('Ассистент через OpenAI. Сообщения передаются в OpenAI.\n'+HELP); return
         if command == '/new': store.clear(uid); await m.answer('История очищена.'); return
         if command == '/stats': await m.answer(stats(uid)); return
         if command == '/model':
@@ -108,7 +107,7 @@ async def main():
     async with httpx.AsyncClient(timeout=90,follow_redirects=False,trust_env=False) as client:
         try:
             if (await bot.get_webhook_info()).url: raise SystemExit('У этого бота включён webhook; запуск остановлен.')
-            print('Telegram подключён. Провайдер: '+provider+'. Бот начинает получать сообщения.', flush=True)
+            print('Telegram подключён. OpenAI API. Бот начинает получать сообщения.', flush=True)
             await dp.start_polling(bot,allowed_updates=['message','callback_query'],tasks_concurrency_limit=32)
         finally:
             store.db.close()
