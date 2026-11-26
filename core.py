@@ -70,11 +70,34 @@ class Store:
 
 class APIError(Exception): pass
 
+def safe_api_error(response):
+    status = 'HTTP ' + str(response.status_code)
+    if response.status_code != 429: return status
+    reasons = {
+        'credit_balance_exhausted': 'Закончились предоплаченные средства OpenAI API. Проверьте Billing.',
+        'organization_spend_limit_exceeded': 'Достигнут лимит расходов организации OpenAI. Проверьте Limits.',
+        'project_spend_limit_exceeded': 'Достигнут лимит расходов проекта OpenAI. Проверьте Limits.',
+        'organization_usage_limit_exceeded': 'Достигнут месячный лимит использования организации OpenAI.',
+        'insufficient_quota': 'Недостаточно квоты OpenAI API. Проверьте баланс и лимиты проекта в Billing и Limits.',
+        'rate_limit_exceeded': 'Временный лимит запросов или токенов OpenAI. Подождите и повторите вручную.',
+        'slow_down': 'OpenAI просит снизить частоту запросов. Подождите и повторите вручную.',
+    }
+    try:
+        error = response.json().get('error', {})
+        code = error.get('code')
+        kind = error.get('type')
+        if not isinstance(code, str): code = ''
+        if not isinstance(kind, str): kind = ''
+        if code not in reasons and kind == 'insufficient_quota': code = kind
+        if code in reasons: return status + ': ' + reasons[code]
+    except (ValueError, AttributeError, TypeError): pass
+    return status + ': OpenAI ограничил запрос. Причина не уточнена: проверьте Billing и Limits.'
+
 async def complete(client, base, key, model, messages, max_tokens):
     try:
         if base != OPENAI_BASE_URL: raise APIError('Разрешён только официальный API OpenAI')
         response = await client.post(base+'/chat/completions',headers={'Authorization':'Bearer '+key},json={'model':model,'messages':messages,'max_completion_tokens':max_tokens,'stream':False})
-        if response.status_code != 200: raise APIError('HTTP '+str(response.status_code))
+        if response.status_code != 200: raise APIError(safe_api_error(response))
         data = response.json()
         answer = data['choices'][0]['message']['content']
         if not isinstance(answer,str) or not answer.strip() or len(answer)>100000: raise ValueError()

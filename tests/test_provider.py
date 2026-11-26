@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 import httpx
-from core import Store, provider_config, complete, APIError
+from core import Store, provider_config, complete, APIError, safe_api_error
 
 class ProviderTests(unittest.TestCase):
     def test_official_default(self):
@@ -67,5 +67,18 @@ class HTTPTests(unittest.TestCase):
         with self.assertRaises(APIError) as result:
             immediate(complete(FakeClient(handler),'https://api.openai.com/v1','test-key','gpt-5.4-mini',[],1500))
         self.assertEqual(str(result.exception),'HTTP 401')
+
+class ErrorTests(unittest.TestCase):
+    def test_429_codes_are_distinguished_without_raw_message(self):
+        for code,word in [('insufficient_quota','квоты'),('rate_limit_exceeded','Временный'),('credit_balance_exhausted','средства'),('project_spend_limit_exceeded','проекта'),('organization_spend_limit_exceeded','организации'),('organization_usage_limit_exceeded','месячный'),('slow_down','частоту')]:
+            with self.subTest(code=code):
+                error=safe_api_error(httpx.Response(429,json={'error':{'code':code,'message':'secret-token'}}))
+                self.assertIn(word,error)
+                self.assertNotIn('secret-token',error)
+    def test_unknown_malformed_and_legacy_quota(self):
+        for payload in [{'error':None},{'error':{'code':['secret-token']}},[],{'error':{'code':'secret-token'}}]:
+            self.assertNotIn('secret-token',safe_api_error(httpx.Response(429,json=payload)))
+        self.assertIn('квоты',safe_api_error(httpx.Response(429,json={'error':{'type':'insufficient_quota'}})))
+        self.assertIn('не уточнена',safe_api_error(httpx.Response(429,text='secret-token')))
 
 if __name__=='__main__': unittest.main()
