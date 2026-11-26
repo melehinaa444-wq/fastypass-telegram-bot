@@ -32,7 +32,7 @@ async def main():
     except ValueError as exc: raise SystemExit(str(exc)) from None
     store = Store(os.getenv('DB_PATH','data/bot.sqlite3'),default,os.getenv('SYSTEM_PROMPT','Ты полезный ассистент.'),models=models)
     for uid in ids('ALLOWLIST_IDS') | admins: store.allow(uid,True)
-    limit, output = int(os.getenv('MAX_HISTORY_CHARS','24000')), int(os.getenv('MAX_OUTPUT_TOKENS','1500'))
+    limit, output = int(os.getenv('MAX_HISTORY_CHARS','12000')), int(os.getenv('MAX_OUTPUT_TOKENS','1500'))
     if not 4000 <= limit <= 100000 or not 1 <= output <= 16000: raise SystemExit('Неверные лимиты')
     bot, dp = Bot(token), Dispatcher()
     busy = set()
@@ -65,7 +65,7 @@ async def main():
         if not allowed(uid): await m.answer(f'Доступ закрыт. Ваш ID: {uid}'); return
         if uid in busy: await m.answer('Дождитесь завершения предыдущего запроса.'); return
         if command in ('/start','/help'):
-            await m.answer('Ассистент через OpenAI. Сообщения передаются в OpenAI.\n'+HELP); return
+            await m.answer('Ассистент через Groq. Сообщения передаются в Groq.\n'+HELP); return
         if command == '/new': store.clear(uid); await m.answer('История очищена.'); return
         if command == '/stats': await m.answer(stats(uid)); return
         if command == '/model':
@@ -107,7 +107,7 @@ async def main():
     async with httpx.AsyncClient(timeout=90,follow_redirects=False,trust_env=False) as client:
         try:
             if (await bot.get_webhook_info()).url: raise SystemExit('У этого бота включён webhook; запуск остановлен.')
-            print('Telegram подключён. OpenAI API. Бот начинает получать сообщения.', flush=True)
+            print('Telegram подключён. Groq API. Бот начинает получать сообщения.', flush=True)
             await dp.start_polling(bot,allowed_updates=['message','callback_query'],tasks_concurrency_limit=32)
         finally:
             store.db.close()

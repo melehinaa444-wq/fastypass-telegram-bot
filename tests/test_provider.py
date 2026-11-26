@@ -8,15 +8,18 @@ from core import Store, provider_config, complete, APIError, safe_api_error
 
 class ProviderTests(unittest.TestCase):
     def test_official_default(self):
-        base,key,models,default=provider_config({'OPENAI_API_KEY':'test-key'})
-        self.assertEqual(base,'https://api.openai.com/v1')
-        self.assertEqual(default,'gpt-5.4-mini')
-        self.assertEqual(models,('gpt-5.4-mini',))
+        base,key,models,default=provider_config({'GROQ_API_KEY':'test-key'})
+        self.assertEqual(base,'https://api.groq.com/openai/v1')
+        self.assertEqual(default,'openai/gpt-oss-120b')
+        self.assertEqual(models,('openai/gpt-oss-120b','openai/gpt-oss-20b'))
     def test_no_key_fallback_or_untrusted_host(self):
         for config in [
             {},
-            {'BASE_URL':'https://example.com','OPENAI_API_KEY':'test-key'},
-            {'BASE_URL':'https://api.openai.com.evil.example/v1','OPENAI_API_KEY':'test-key'},
+            {'BASE_URL':'https://example.com','GROQ_API_KEY':'test-key'},
+            {'BASE_URL':'https://api.groq.com.evil.example/openai/v1','GROQ_API_KEY':'test-key'},
+            {'OPENAI_API_KEY':'test-key'},
+            {'GROQ_API_KEY':'sk-proj-fake-key'},
+            {'BASE_URL':'https://api.openai.com/v1','GROQ_API_KEY':'test-key'},
         ]:
             with self.assertRaises(ValueError): provider_config(config)
     def test_model_migration_and_user_isolation(self):
@@ -26,10 +29,10 @@ class ProviderTests(unittest.TestCase):
             store.db.execute("INSERT INTO users(id,model) VALUES(1,'retired-model')")
             store.db.commit()
             store.record(1,'retired-model','hello','answer',{'prompt_tokens':3,'completion_tokens':2})
-            store.record(2,'gpt-5.4-mini','private','private answer',{})
+            store.record(2,'openai/gpt-oss-120b','private','private answer',{})
             store.db.close()
-            store=Store(path,models=('gpt-5.4-mini',))
-            self.assertEqual(store.user(1)[1],'gpt-5.4-mini')
+            store=Store(path,models=('openai/gpt-oss-120b',))
+            self.assertEqual(store.user(1)[1],'openai/gpt-oss-120b')
             self.assertEqual(len(store.context(1,'new')),2)
             self.assertEqual(store.stats(1)[:3],(1,3,2))
             self.assertNotIn('private',str(store.context(1,'new')))
@@ -49,36 +52,35 @@ class FakeClient:
 
 class HTTPTests(unittest.TestCase):
     def test_provider_payloads(self):
-        for base,field in [('https://api.openai.com/v1','max_completion_tokens')]:
+        for base,field in [('https://api.groq.com/openai/v1','max_completion_tokens')]:
             def handler(request):
                 self.assertEqual(str(request.url),base+'/chat/completions')
                 payload=json.loads(request.content)
                 self.assertEqual(payload[field],1500)
                 self.assertNotIn('max_tokens' if field=='max_completion_tokens' else 'max_completion_tokens',payload)
                 return httpx.Response(200,json={'choices':[{'message':{'content':'answer'}}],'usage':{'prompt_tokens':5}})
-            answer,usage=immediate(complete(FakeClient(handler),base,'test-key','gpt-5.4-mini',[{'role':'user','content':'hello'}],1500))
+            answer,usage=immediate(complete(FakeClient(handler),base,'test-key','openai/gpt-oss-120b',[{'role':'user','content':'hello'}],1500))
             self.assertEqual(answer,'answer')
     def test_non_official_endpoint_never_called(self):
         def handler(request): raise AssertionError('Must not send credentials')
         with self.assertRaises(APIError):
-            immediate(complete(FakeClient(handler),'https://example.com/v1','test-key','gpt-5.4-mini',[],1500))
+            immediate(complete(FakeClient(handler),'https://example.com/v1','test-key','openai/gpt-oss-120b',[],1500))
     def test_errors_do_not_leak_response(self):
         def handler(request): return httpx.Response(401,text='secret-token')
         with self.assertRaises(APIError) as result:
-            immediate(complete(FakeClient(handler),'https://api.openai.com/v1','test-key','gpt-5.4-mini',[],1500))
-        self.assertEqual(str(result.exception),'HTTP 401')
+            immediate(complete(FakeClient(handler),'https://api.groq.com/openai/v1','test-key','openai/gpt-oss-120b',[],1500))
+        self.assertIn('GROQ_API_KEY', str(result.exception))
+        self.assertNotIn('secret-token', str(result.exception))
 
 class ErrorTests(unittest.TestCase):
-    def test_429_codes_are_distinguished_without_raw_message(self):
-        for code,word in [('insufficient_quota','квоты'),('rate_limit_exceeded','Временный'),('credit_balance_exhausted','средства'),('project_spend_limit_exceeded','проекта'),('organization_spend_limit_exceeded','организации'),('organization_usage_limit_exceeded','месячный'),('slow_down','частоту')]:
-            with self.subTest(code=code):
-                error=safe_api_error(httpx.Response(429,json={'error':{'code':code,'message':'secret-token'}}))
-                self.assertIn(word,error)
-                self.assertNotIn('secret-token',error)
-    def test_unknown_malformed_and_legacy_quota(self):
-        for payload in [{'error':None},{'error':{'code':['secret-token']}},[],{'error':{'code':'secret-token'}}]:
-            self.assertNotIn('secret-token',safe_api_error(httpx.Response(429,json=payload)))
-        self.assertIn('квоты',safe_api_error(httpx.Response(429,json={'error':{'type':'insufficient_quota'}})))
-        self.assertIn('не уточнена',safe_api_error(httpx.Response(429,text='secret-token')))
+    def test_errors_do_not_leak_raw_response(self):
+        for status in [400,401,403,404,413,429,503]:
+            result=safe_api_error(httpx.Response(status,text='secret-token'))
+            self.assertIn('HTTP '+str(status),result)
+            self.assertNotIn('secret-token',result)
+        self.assertIn('Groq',safe_api_error(httpx.Response(429)))
+    def test_retry_after_is_sanitized(self):
+        self.assertIn('42 сек.',safe_api_error(httpx.Response(429,headers={'retry-after':'42'})))
+        self.assertNotIn('secret-token',safe_api_error(httpx.Response(429,headers={'retry-after':'secret-token'})))
 
 if __name__=='__main__': unittest.main()

@@ -2,21 +2,22 @@ import os
 import sqlite3
 from pathlib import Path
 
-MODELS = ('gpt-5.4-mini',)
-OPENAI_BASE_URL = 'https://api.openai.com/v1'
+MODELS = ('openai/gpt-oss-120b', 'openai/gpt-oss-20b')
+GROQ_BASE_URL = 'https://api.groq.com/openai/v1'
 
 def provider_config(env):
-    base = env.get('BASE_URL', OPENAI_BASE_URL).strip().rstrip('/')
-    if base != OPENAI_BASE_URL:
-        raise ValueError('BASE_URL должен быть https://api.openai.com/v1')
-    key = env.get('OPENAI_API_KEY', '').strip()
-    if not key: raise ValueError('Не задана переменная OPENAI_API_KEY')
-    default = env.get('DEFAULT_MODEL', 'gpt-5.4-mini').strip()
+    base = env.get('BASE_URL', GROQ_BASE_URL).strip().rstrip('/')
+    if base != GROQ_BASE_URL:
+        raise ValueError('BASE_URL должен быть https://api.groq.com/openai/v1')
+    key = env.get('GROQ_API_KEY', '').strip()
+    if not key: raise ValueError('Не задана переменная GROQ_API_KEY')
+    if key.startswith('sk-'): raise ValueError('Нужен ключ Groq, а не ключ OpenAI')
+    default = env.get('DEFAULT_MODEL', 'openai/gpt-oss-120b').strip()
     if default not in MODELS: raise ValueError('DEFAULT_MODEL не поддерживается')
     return base, key, MODELS, default
 
 class Store:
-    def __init__(self, path, default='gpt-5.4-mini', prompt='Ты полезный ассистент.', models=MODELS):
+    def __init__(self, path, default='openai/gpt-oss-120b', prompt='Ты полезный ассистент.', models=MODELS):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path)
         self.db.execute('PRAGMA journal_mode=WAL')
@@ -72,30 +73,25 @@ class APIError(Exception): pass
 
 def safe_api_error(response):
     status = 'HTTP ' + str(response.status_code)
-    if response.status_code != 429: return status
     reasons = {
-        'credit_balance_exhausted': 'Закончились предоплаченные средства OpenAI API. Проверьте Billing.',
-        'organization_spend_limit_exceeded': 'Достигнут лимит расходов организации OpenAI. Проверьте Limits.',
-        'project_spend_limit_exceeded': 'Достигнут лимит расходов проекта OpenAI. Проверьте Limits.',
-        'organization_usage_limit_exceeded': 'Достигнут месячный лимит использования организации OpenAI.',
-        'insufficient_quota': 'Недостаточно квоты OpenAI API. Проверьте баланс и лимиты проекта в Billing и Limits.',
-        'rate_limit_exceeded': 'Временный лимит запросов или токенов OpenAI. Подождите и повторите вручную.',
-        'slow_down': 'OpenAI просит снизить частоту запросов. Подождите и повторите вручную.',
+        401: 'Groq отклонил ключ. Проверьте GROQ_API_KEY в Railway.',
+        403: 'Нет доступа к ресурсу Groq. Проверьте разрешения аккаунта и модели.',
+        404: 'Модель или ресурс Groq не найдены. Проверьте /model.',
+        413: 'Слишком большой запрос для Groq. Начните /new или уменьшите MAX_HISTORY_CHARS.',
+        429: 'Достигнут лимит запросов или токенов Groq. Подождите; проверьте Limits в консоли Groq.',
+        503: 'Groq временно недоступен. Повторите запрос позже.',
     }
-    try:
-        error = response.json().get('error', {})
-        code = error.get('code')
-        kind = error.get('type')
-        if not isinstance(code, str): code = ''
-        if not isinstance(kind, str): kind = ''
-        if code not in reasons and kind == 'insufficient_quota': code = kind
-        if code in reasons: return status + ': ' + reasons[code]
-    except (ValueError, AttributeError, TypeError): pass
-    return status + ': OpenAI ограничил запрос. Причина не уточнена: проверьте Billing и Limits.'
+    explanation = reasons.get(response.status_code)
+    if response.status_code == 429:
+        delay = response.headers.get('retry-after','')
+        # Never echo untrusted header content; only a bounded numeric delay.
+        if delay.isascii() and delay.isdigit() and len(delay) <= 7:
+            explanation += ' Повторите не раньше чем через ' + str(int(delay)) + ' сек.'
+    return status + (': ' + explanation if explanation else '')
 
 async def complete(client, base, key, model, messages, max_tokens):
     try:
-        if base != OPENAI_BASE_URL: raise APIError('Разрешён только официальный API OpenAI')
+        if base != GROQ_BASE_URL: raise APIError('Разрешён только официальный API Groq')
         response = await client.post(base+'/chat/completions',headers={'Authorization':'Bearer '+key},json={'model':model,'messages':messages,'max_completion_tokens':max_tokens,'stream':False})
         if response.status_code != 200: raise APIError(safe_api_error(response))
         data = response.json()
