@@ -6,7 +6,7 @@ import httpx
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from core import Store, MODELS, complete, APIError
+from core import Store, provider_config, complete, APIError
 
 HELP = '/model — модель\n/new — очистить историю\n/stats — токены\n/prompt текст — личный системный промпт\n/prompt reset — сброс\n/id — ваш ID\n/admin — админка'
 
@@ -24,15 +24,14 @@ async def main():
     if os.name != 'nt' and env.exists() and env.stat().st_mode & 0o077:
         raise SystemExit('Установите права 600 на .env')
     load_dotenv(dotenv_path=env)
-    token, key = os.getenv('TELEGRAM_TOKEN',''), os.getenv('FASTYPASS_API_KEY','')
+    token = os.getenv('TELEGRAM_TOKEN','').strip()
     admins = ids('ADMIN_IDS')
-    missing = [name for name, value in [('TELEGRAM_TOKEN',token),('FASTYPASS_API_KEY',key),('ADMIN_IDS',admins)] if not value]
+    missing = [name for name, value in [('TELEGRAM_TOKEN',token),('ADMIN_IDS',admins)] if not value]
     if missing: raise SystemExit('Не заданы переменные: ' + ', '.join(missing))
-    base = os.getenv('BASE_URL','https://api.fastypass.com:8444/v1').rstrip('/')
-    if base != 'https://api.fastypass.com:8444/v1': raise SystemExit('Неподтвержденный BASE_URL')
-    default = os.getenv('DEFAULT_MODEL','gpt-5.4-mini')
-    if default not in MODELS: raise SystemExit('Неверная модель')
-    store = Store(os.getenv('DB_PATH','data/bot.sqlite3'),default,os.getenv('SYSTEM_PROMPT','Ты полезный ассистент.'))
+    try: base, key, models, default = provider_config(os.environ)
+    except ValueError as exc: raise SystemExit(str(exc)) from None
+    provider = 'OpenAI' if base == 'https://api.openai.com/v1' else 'Fastypass'
+    store = Store(os.getenv('DB_PATH','data/bot.sqlite3'),default,os.getenv('SYSTEM_PROMPT','Ты полезный ассистент.'),models=models)
     for uid in ids('ALLOWLIST_IDS') | admins: store.allow(uid,True)
     limit, output = int(os.getenv('MAX_HISTORY_CHARS','24000')), int(os.getenv('MAX_OUTPUT_TOKENS','1500'))
     if not 4000 <= limit <= 100000 or not 1 <= output <= 16000: raise SystemExit('Неверные лимиты')
@@ -51,7 +50,7 @@ async def main():
         if not q.message or q.message.chat.type != 'private' or not allowed(uid):
             await q.answer('Нет доступа'); return
         if uid in busy: await q.answer('Дождитесь ответа'); return
-        if q.data and q.data.startswith('model:') and q.data[6:] in MODELS:
+        if q.data and q.data.startswith('model:') and q.data[6:] in models:
             store.set(uid,'model',q.data[6:])
             await q.answer('Модель выбрана; история очищена')
             await q.message.answer('Модель: '+q.data[6:])
@@ -67,11 +66,11 @@ async def main():
         if not allowed(uid): await m.answer(f'Доступ закрыт. Ваш ID: {uid}'); return
         if uid in busy: await m.answer('Дождитесь завершения предыдущего запроса.'); return
         if command in ('/start','/help'):
-            await m.answer('Ассистент через Fastypass. Сообщения передаются провайдеру. Названия моделей заявлены провайдером; подлинность не подтверждена.\n'+HELP); return
+            await m.answer('Ассистент через '+provider+'. Сообщения передаются выбранному провайдеру.\n'+HELP); return
         if command == '/new': store.clear(uid); await m.answer('История очищена.'); return
         if command == '/stats': await m.answer(stats(uid)); return
         if command == '/model':
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=x,callback_data='model:'+x)] for x in MODELS])
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=x,callback_data='model:'+x)] for x in models])
             await m.answer('Текущая: '+store.user(uid)[1]+'\nПри смене история очищается.',reply_markup=keyboard); return
         if command == '/prompt':
             if not arg: await m.answer('Текущий промпт:\n'+(store.user(uid)[2] or store.prompt)); return
@@ -109,7 +108,7 @@ async def main():
     async with httpx.AsyncClient(timeout=90,follow_redirects=False,trust_env=False) as client:
         try:
             if (await bot.get_webhook_info()).url: raise SystemExit('У этого бота включён webhook; запуск остановлен.')
-            print('Telegram подключён. Бот начинает получать сообщения.', flush=True)
+            print('Telegram подключён. Провайдер: '+provider+'. Бот начинает получать сообщения.', flush=True)
             await dp.start_polling(bot,allowed_updates=['message','callback_query'],tasks_concurrency_limit=32)
         finally:
             store.db.close()

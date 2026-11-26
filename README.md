@@ -1,31 +1,40 @@
-# Fastypass Telegram Bot
+# Telegram assistant — OpenAI / Fastypass
 
-Python 3.12 Telegram assistant using the Fastypass OpenAI-compatible endpoint.
+Default provider: official OpenAI, https://api.openai.com/v1.
+
+## Railway variables
+
+- TELEGRAM_TOKEN: separate Telegram bot token.
+- OPENAI_API_KEY: OpenAI API key; set directly in Railway, never commit it.
+- BASE_URL: https://api.openai.com/v1
+- DEFAULT_MODEL: gpt-5.4-mini
+- ADMIN_IDS: positive numeric Telegram user IDs separated by commas.
+- DB_PATH: /data/bot.sqlite3 (attach a separate volume mounted at /data).
+- SYSTEM_PROMPT: your assistant instructions, including a standup writing prompt.
+- MAX_OUTPUT_TOKENS: 1500
+- MAX_HISTORY_CHARS: 24000
+- ALLOWLIST_IDS: optional permitted users, reapplied on startup.
+
+Remove FASTYPASS_API_KEY when switching to OpenAI. Old provider model selections are reset to the default, clearing the affected conversation but preserving usage. /new clears conversation; /prompt reset returns to SYSTEM_PROMPT. A personal prompt overrides SYSTEM_PROMPT.
+
+## Local setup
+
+Python 3.12. Create a virtual environment, install requirements.txt, copy .env.example to .env, fill it locally and run python bot.py. On Linux restrict .env to mode 600. Never commit secrets.
 
 ## Features
 
-- Nine provider model names, selected with /model.
-- Per-user SQLite conversations, /new, personal /prompt.
-- Default-deny allowlist and admin commands: /allow, /deny, /users, /globalstats.
-- Provider-reported usage with /stats. No dollar balance estimates.
-- Private chats only. Media disabled pending verified API compatibility.
+Private chats, per-user SQLite history and prompts, model menu, /new, /stats and admin /allow /deny /users /globalstats. Usage comes from API responses and does not represent dollar balance. Attachments remain disabled pending end-to-end verification.
 
-Model names are provider identifiers; model identity and pricing are not independently verified.
+## Optional Fastypass mode
 
-## Setup
+Explicitly set BASE_URL=https://api.fastypass.com:8444/v1 and FASTYPASS_API_KEY. OpenAI credentials are never used as a fallback for Fastypass. Nine original provider model identifiers remain supported in this mode; their identity and pricing are not independently verified.
 
-Create a virtual environment and install requirements.txt. Copy .env.example to .env, then fill TELEGRAM_TOKEN, FASTYPASS_API_KEY and ADMIN_IDS. Never commit .env. On Linux use chmod 600 .env. Start with python bot.py.
+## Deployment
 
-Commands: /start /help /id /model /new /stats /prompt /admin.
-Changing model or prompt clears the user's conversation. /new preserves usage statistics.
-ALLOWLIST_IDS is applied at every startup; remove an ID from this setting as well when revoking persistent access.
+Dockerfile included. Use one replica in a separate Railway service with its own persistent volume. No public domain is needed. Existing bot services must remain separate.
 
-## Railway
+## Validation
 
-Create a separate service for this repository, with one replica and its own volume mounted at /data. Set DB_PATH=/data/bot.sqlite3. Configure secrets through service variables; do not upload .env. No public domain or port is required. Do not reuse the existing bot's token, service or volume.
+Provider routing, payload fields, missing-key handling, model migration and credential isolation are tested with mocked HTTP responses. Live OpenAI completion testing requires a fresh key configured by the user; published chat keys are not used.
 
-## Verification status
-
-Fastypass guide and token pages were reachable on 2026-11-26. Unauthenticated GET /v1/models returned 401. Authenticated completion and Telegram end-to-end checks are pending credentials/configuration. Photo, document and voice support is not verified and is disabled.
-
-Sources: https://chat.fastypass.com:8444/guide and https://chat.fastypass.com:8444/tokens
+Official API reference: https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
