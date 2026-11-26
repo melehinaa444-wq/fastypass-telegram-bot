@@ -10,17 +10,24 @@ from core import Store, MODELS, complete, APIError
 
 HELP = '/model — модель\n/new — очистить историю\n/stats — токены\n/prompt текст — личный системный промпт\n/prompt reset — сброс\n/id — ваш ID\n/admin — админка'
 
-def ids(name): return {int(x.strip()) for x in os.getenv(name,'').split(',') if x.strip()}
+def ids(name):
+    try:
+        values = {int(x.strip()) for x in os.getenv(name,'').split(',') if x.strip()}
+        if any(x <= 0 for x in values): raise ValueError()
+        return values
+    except ValueError:
+        raise SystemExit(name + ': нужны положительные числовые Telegram ID через запятую') from None
 
 async def main():
     os.umask(0o077)
     env = Path('.env')
     if os.name != 'nt' and env.exists() and env.stat().st_mode & 0o077:
         raise SystemExit('Установите права 600 на .env')
-    load_dotenv()
+    load_dotenv(dotenv_path=env)
     token, key = os.getenv('TELEGRAM_TOKEN',''), os.getenv('FASTYPASS_API_KEY','')
     admins = ids('ADMIN_IDS')
-    if not token or not key or not admins: raise SystemExit('Заполните .env: новые ключи и ADMIN_IDS')
+    missing = [name for name, value in [('TELEGRAM_TOKEN',token),('FASTYPASS_API_KEY',key),('ADMIN_IDS',admins)] if not value]
+    if missing: raise SystemExit('Не заданы переменные: ' + ', '.join(missing))
     base = os.getenv('BASE_URL','https://api.fastypass.com:8444/v1').rstrip('/')
     if base != 'https://api.fastypass.com:8444/v1': raise SystemExit('Неподтвержденный BASE_URL')
     default = os.getenv('DEFAULT_MODEL','gpt-5.4-mini')
@@ -102,6 +109,7 @@ async def main():
     async with httpx.AsyncClient(timeout=90,follow_redirects=False,trust_env=False) as client:
         try:
             if (await bot.get_webhook_info()).url: raise SystemExit('У этого бота включён webhook; запуск остановлен.')
+            print('Telegram подключён. Бот начинает получать сообщения.', flush=True)
             await dp.start_polling(bot,allowed_updates=['message','callback_query'],tasks_concurrency_limit=32)
         finally:
             store.db.close()
@@ -111,5 +119,13 @@ if __name__ == '__main__':
     # Third-party exceptions may contain request URLs or tokens. Never log them.
     logging.disable(logging.CRITICAL)
     try: asyncio.run(main())
-    except (KeyboardInterrupt,SystemExit): pass
-    except Exception: print('Бот остановлен из-за ошибки. Проверьте настройки и доступность сервисов.')
+    except KeyboardInterrupt: pass
+    except SystemExit as exc:
+        if isinstance(exc.code, str):
+            print('Ошибка запуска: ' + exc.code, flush=True)
+            raise SystemExit(1) from None
+        raise
+    except Exception as exc:
+        # Print only the exception class, never its message or request URL.
+        print('Ошибка запуска (' + type(exc).__name__ + '). Проверьте переменные, Telegram и хранилище.', flush=True)
+        raise SystemExit(1) from None
